@@ -37,28 +37,67 @@ def usage():
     print "\t-d\t\t host file directory, Conflicts with -h and -H options"
     print "\t-g\t\t groupname      target hosts in psshpass group 'groupname'"
     print "\t-X\t\t groupname      exclude hosts in psshpass group 'groupname',This option may be used in combination with any other of the node selection options "
-    print "\t-o\t\t output filename"
+    print "\t-o\t\t output to file"
+    print "\t--cmd\t\t run cmd (Can not write)"
+    print "\t--cp\t\t copy file (if not --cp, is run cmd)"
     print "\t\t\t --version"
     print "\t\t\t --help"
 
 #####
-#读文件并执行shell
-def func(ip,cmd):
+class Autossh():
+    def __init__(self,hostname, port=22, username=None, password=None, key_filename=None, timeout=None):
+        '''
+        登陆远程主机
+        '''
+        self.hostname = hostname
+        self.port = port
+        self.username = username
+        self.password = password
+        self.key_filename = key_filename
+        self.timeout = timeout
+        try:
+            self.ssh = paramiko.SSHClient()
+            self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh.connect(hostname=self.hostname, port=self.port, username=self.username, password=self.password, \
+                    key_filename=self.key_filename,timeout=self.timeout)
+        except Exception as e:
+            print "connect %s error: %s " % (self.hostname,e)
+            sys.exit(1)
 
-    port = 50022
-    username = 'root'
-    password = 'xiaomu.110'
+    def exec_cmd(self,cmd):
 
-    paramiko.util.log_to_file('paramiko.log')
-    s = paramiko.SSHClient()
-    s.set_missing_host_key_policy(paramiko.AutoAddPolicy())    
-    s.connect(hostname = ip,port=port,username=username, password=password,key_filename='mf_zhuxixi')    
-    stdin,stdout,stderr=s.exec_command(cmd)    
-    print ip,'------------------------'
-    print stderr.read()
-    print stdout.read()    
-    s.close()
-    sem.release()
+        stdin, stdout, stderr = self.ssh.exec_command(cmd)
+        returncode = stdout.channel.recv_exit_status()
+
+        #return returncode, stdout, stderr
+        #print stdout.channel.recv_exit_status()
+        print """
+%s:{
+returncode: "%s",
+stdout: "\n%s",
+stderr: "\n%s",
+}
+        """ % (self.hostname,returncode,stdout.read(),stderr.read())
+        #return  returncode,stdout, stderr
+        sem.release()     #释放锁
+        self.close()
+
+    def put_file(self,localfile,remotefile):
+        try:
+            print localfile
+            print remotefile
+            sftp = self.ssh.open_sftp()
+            sftp.put(localfile,remotefile)
+            sftp.close()
+        except Exception as e:
+            print 'sftp error',self.hostname,e
+        finally:
+            sem.release()     #释放锁
+            self.close()
+
+
+    def close(self):
+        self.ssh.close()
     
 
 
@@ -78,19 +117,23 @@ if __name__ == '__main__':
 
     #输入参数错误引起的异常
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'h:H:l:p:P:t:c:x:d:g:X:o:',
-        ["help","version",])
+        opts, args = getopt.getopt(sys.argv[1:], 'h:H:u:p:P:i:t:c:x:d:g:X:o:',
+        ["cmd","cp","help","version",])
     except getopt.GetoptError,e:
         print "\033[31;1m[Error]===>",e,"\033[0m"
         usage()
         sys.exit(0)
 
+    print '--->',opts
+    print '==',args
+
     host = None
-    hosts = None
+    host_file = None
     user = 'root'
     password = None 
     Port = 22
-    timeout = 60
+    key_filename=None
+    timeout = 5
     #concurrent connections
     maxThread=1
     exclude_hosts = None
@@ -98,22 +141,25 @@ if __name__ == '__main__':
     hosts_dir = None
     hosts_group = None
     output = None
+    copyfile = False
 
     for op, value in opts:
         if op == '-h':
-            host = value
+            host_file = value
         elif op == '-H':
-            hosts = value
-        elif op == '-l':
+            host = value
+        elif op == '-u':
             user = value
         elif op == '-p':
             password = value
         elif op == '-P':
             Port = value
+        elif op == '-i':
+            key_filename = value
         elif op == '-t':
-            timeout= value
+            timeout = value
         elif op == '-c':   #x d g X o 
-            maxThread = value
+            maxThread = int(value)
         elif op == '-x':   #x d g X o 
             exclude_hosts = value
         elif op == '-d':   #x d g X o 
@@ -124,6 +170,8 @@ if __name__ == '__main__':
             exclude_group = value
         elif op == '-o':   #x d g X o 
             output = value
+        elif op == '--cp':
+            copyfile = True
         elif op == '--help':
             usage()
             sys.exit(0)
@@ -131,27 +179,36 @@ if __name__ == '__main__':
             info()
             sys.exit(0)
         else:
+            print "\033[31;1m[Error]===>option %s not recognized:\033[0m" % op
             usage()
             sys.exit(0)
 
-    usage()
-    sys.exit(0)
+    print '1111111111'
     #定义线程数
-    maxThread=1
-
-    serverlist_file = 'server_list.txt'
 
     sem=threading.BoundedSemaphore(maxThread)
 
-    cmd = "ifconfig"
-    
+    if copyfile:
+        localfile = args[0]
+        remotefile = args[1]
+    else:
+        cmd = ' '.join(args)
+
+
    #请用rU来读取（强烈推荐），即U通用换行模式（Universal new line mode）。该模式会把所有的换行符（\r \n \r\n）替换为\n。
-    with open(serverlist_file,'rU') as f:
+    with open(host_file,'rU') as f:
         # print f.readlines()
         for i in  f.readlines():
             i = i.strip()
             sem.acquire()
-            threading.Thread(target=func,args=(i,cmd,)).start()
+            conn = Autossh(hostname=i,port=Port,username=user,password=password,key_filename=key_filename,timeout=timeout)
+            if copyfile:
+                threading.Thread(target=conn.put_file,args=(localfile,remotefile,)).start()
+            else:
+                threading.Thread(target=conn.exec_cmd,args=(cmd,)).start()
+                # conn.exec_cmd(cmd)
 
+
+    #再次加下锁，保证上面的并发线程全部执行完（上面的锁被释放完）
     for a in range(maxThread):   
                 sem.acquire();
