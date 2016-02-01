@@ -57,16 +57,16 @@ class Autossh():
         self.timeout = timeout
         try:
             self.ssh = paramiko.SSHClient()
+            # paramiko.util.log_to_file("test.log")
             self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self.ssh.connect(hostname=self.hostname, port=self.port, username=self.username, password=self.password, \
+            self.ssh.connect(hostname=self.hostname, port=int(self.port), username=self.username, password=self.password, \
                     key_filename=self.key_filename,timeout=self.timeout)
         except Exception as e:
             print "connect %s error: %s " % (self.hostname,e)
-            sys.exit(1)
 
     def exec_cmd(self,cmd):
 
-        stdin, stdout, stderr = self.ssh.exec_command(cmd)
+        stdin, stdout, stderr = self.ssh.exec_command(cmd, timeout=self.timeout)
         returncode = stdout.channel.recv_exit_status()
 
         #return returncode, stdout, stderr
@@ -202,6 +202,8 @@ if __name__ == '__main__':
             i = i.strip()
             sem.acquire()
             conn = Autossh(hostname=i,port=Port,username=user,password=password,key_filename=key_filename,timeout=timeout)
+            if not conn:
+                break
             if copyfile:
                 threading.Thread(target=conn.put_file,args=(localfile,remotefile,)).start()
             else:
